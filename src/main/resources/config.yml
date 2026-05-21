@@ -1,0 +1,70 @@
+timezone: "America/New_York"
+
+discord:
+  token: "PUT_TOKEN_HERE"
+  guildId: "PUT_GUILD_ID_HERE"
+  forums:
+    elections: "PUT_FORUM_ID_HERE"
+    impeachment: "PUT_FORUM_ID_HERE"
+    policyProposals: "PUT_FORUM_ID_HERE"
+    polls: "PUT_FORUM_ID_HERE"
+  channels:
+    approvedChangesLog: "PUT_CHANNEL_ID_HERE"
+
+roles:
+  autoCreateDiscordRoles: true
+  president: "President"
+  cabinetTier1: "Cabinet Tier 1"
+  cabinetTier2: "Cabinet Tier 2"
+  cabinetTier3: "Cabinet Tier 3"
+
+luckPerms:
+  autoCreateGroups: false
+  groups:
+    president: "president"
+    cabinetTier1: "cabinet_tier_1"
+    cabinetTier2: "cabinet_tier_2"
+    cabinetTier3: "cabinet_tier_3"
+
+elections:
+  monthlyStartDay: 1
+  monthlyEndDay: 7
+  closeTime: "23:59"
+  maxPresidentialWins: 2
+  unlimitedWinsValue: -1
+  minimumVotes: 0
+
+impeachment:
+  durationDays: 3
+  minimumVotes: 0
+
+specialElection:
+  durationDays: 7
+  minimumVotes: 0
+
+cabinet:
+  maxMembers: 3
+  proposalLimit:
+    amount: 1
+    periodDays: 7
+  presidentProposalLimit: -1
+
+policy:
+  durationDays: 7
+  minimumVotes: 0
+  maxFileBytes: 200000
+  allowedExtensions:
+    - ".yml"
+    - ".yaml"
+    - ".json"
+  excludedPaths:
+    - "plugins/ElectionsPlugin/"
+    - "plugins/LuckPerms/"
+    - "world/"
+    - "world_nether/"
+    - "world_the_end/"
+  secretPatterns:
+    - "(?i)token\\s*[:=]"
+    - "(?i)password\\s*[:=]"
+    - "(?i)secret\\s*[:=]"
+    - "(?i)api[_-]?key\\s*[:=]"

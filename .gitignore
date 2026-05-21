@@ -1,0 +1,24 @@
+# Gradle build output and local cache
+.gradle/
+build/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.iml
+
+# Runtime plugin/server data
+plugins/
+*.db
+*.sqlite
+*.sqlite3
+backups/
+
+# Secrets and local environment files
+.env
+*.env
+config.local.yml
+
+# OS clutter
+.DS_Store
+Thumbs.db

@@ -1,0 +1,25 @@
+name: ElectionsPlugin
+version: ${version}
+main: com.electionsplugin.ElectionsPlugin
+description: Folia election governance plugin with a bundled ElectionBot.
+author: Yomamaeatstoes
+api-version: '1.20'
+folia-supported: true
+softdepend:
+  - LuckPerms
+commands:
+  election:
+    description: ElectionsPlugin commands.
+    usage: /election <verify|status|reload>
+    permission: electionsplugin.command
+permissions:
+  electionsplugin.command:
+    description: Allows using base election commands.
+    default: true
+  electionsplugin.admin:
+    description: Allows reloading ElectionsPlugin.
+    default: op
+libraries:
+  - net.dv8tion:JDA:6.4.1
+  - org.xerial:sqlite-jdbc:3.49.1.0
+  - com.google.code.gson:gson:2.13.1
