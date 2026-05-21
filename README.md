@@ -1,100 +1,50 @@
-# ElectionsPlugin
+# Election Plugin
 
-Folia-compatible Minecraft governance plugin with a bundled Discord bot named `ElectionBot`.
+Election plugin with a bundled Discord bot for running server elections, voting, role assignment, and policy proposals through Discord.
 
-This first implementation includes:
+The plugin is designed to allow players to vote in monthly elections, support or oppose proposals, and participate in server government while the plugin handles tracking, validation, roles, and approved changes.
 
-- Bundled JDA Discord bot startup from inside the plugin.
-- SQLite state stored in `plugins/ElectionsPlugin/elections.db`.
-- Configurable Discord forum/channel IDs.
-- Auto-created or reused Discord roles:
-  - `President`
-  - `Cabinet Tier 1`
-  - `Cabinet Tier 2`
-  - `Cabinet Tier 3`
-- Configured LuckPerms group assignment/removal.
-- Discord-to-Minecraft verification using `/election verify <code>`.
-- Monthly election windows using net-score thumbs-up/thumbs-down voting.
-- Candidate registration by posting in the configured elections forum.
-- Out-of-window election post deletion with a forum notice.
-- Election result announcements and next-window announcements.
-- Old candidate thread locking/archiving after results are counted.
-- Presidential term limits with `-1` for unlimited.
-- Cabinet appointment/removal through Discord slash commands.
-- Policy proposal creation for YAML/JSON files.
-- Discord GUI policy file browser with file select menus, preview pages, and edit modals.
-- Attachment-based policy proposals for files too large for Discord modals.
-- Secret-pattern blocking before public diffs are posted.
-- YAML/JSON validation before voting.
-- Diff-based public proposal posts.
-- Approved proposal staging for the next normal restart.
-- Backup/revert behavior when staged changes apply on startup.
+## What It Does
 
-## Build
+Election Plugin supports:
 
-```powershell
-.\gradlew.bat build
-```
+- Discord and Minecraft account verification
+- Monthly election tracking
+- 👍 / 👎 voting with net-score results
+- President role assignment
+- LuckPerms group assignment for verified winners
+- Cabinet tier assignment and removal
+- Impeachment posts and special elections
+- Policy proposal voting
+- YAML and JSON validation for proposed changes
+- Secret/token blocking before changes are accepted
+- Staged approved changes applied on normal restart
+- Backup and revert behavior
+- Configurable Discord forums, roles, LuckPerms groups, limits, and file paths
 
-The plugin jar is written to:
+## Discord Bot
 
-```text
-build/libs/ElectionsPlugin-0.1.0-SNAPSHOT.jar
-```
+This plugin includes a bundled Discord bot. You create the bot in the Discord Developer Portal, add its token to the plugin config, and invite it to your Discord server.
 
-## Install
+The bot can manage election posts, voting, verification, policy proposals, impeachment posts, and server-government roles.
 
-1. Put the jar into the Folia server's `plugins` folder.
-2. Start the server once so `plugins/ElectionsPlugin/config.yml` is created.
-3. Stop the server.
-4. Fill in:
-   - `discord.token`
-   - `discord.guildId`
-   - Discord forum IDs
-   - approved-changes log channel ID
-   - LuckPerms group names
-   - excluded file paths
-5. Make sure the Discord bot has these permissions:
-   - View Channels
-   - Send Messages
-   - Send Messages in Threads
-   - Read Message History
-   - Add Reactions
-   - Manage Messages
-   - Manage Threads
-   - Manage Roles
-6. Start the server again.
+## Setup Overview
 
-## Discord Commands
+1. Create a Discord application and bot in the Discord Developer Portal.
+2. Copy the bot token into the plugin config.
+3. Invite the bot to your Discord server.
+4. Enable the required Discord intents.
+5. Configure your Discord server ID, forum/channel IDs, role IDs, and LuckPerms groups.
+6. Start the Minecraft server with the plugin installed.
 
-The bot registers one slash command:
+## Building Instructions
 
-```text
-/election verify
-/election status
-/election cabinet-set user:<user> tier:<1|2|3>
-/election cabinet-remove user:<user>
-/election propose
-/election propose file:<relative path> content:<full proposed file contents>
-/election propose-upload file:<relative path> attachment:<replacement file>
-```
+./gradlew build
 
-Use `/election propose` with no options to open the Discord GUI file browser. It shows allowed files, lets the president/cabinet preview the file in chunks, and opens a modal to paste replacement contents. Discord modal text is limited, so use `/election propose-upload` for larger config files.
+## Official Discord
 
-If the bot starts but is not in the configured guild yet, the console logs an OAuth2 invite URL. The bot token is never sent through Discord; copy it from the Discord Developer Portal into `config.yml`.
+https://discord.gg/aT9z7q7hX8
 
-## Minecraft Commands
+## Folia Inquisitors
 
-```text
-/election verify <code>
-/election status
-/election reload
-```
-
-## Notes
-
-- Voters only need to be in the Discord server; they do not need linked Minecraft accounts.
-- Candidates may win with only the Discord role. If they verify later during their term, the LuckPerms group is applied.
-- LuckPerms groups are not auto-created. Create them in LuckPerms and configure the names in `config.yml`.
-- File proposals are staged and applied on the next normal restart, not instantly.
-- Files matching secret regexes are blocked before any public diff is posted.
+<img src="https://github.com/Folia-Inquisitors.png" width=80 alt="Folia-Inquisitors">
