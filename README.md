@@ -48,3 +48,20 @@ https://discord.gg/aT9z7q7hX8
 ## Folia Inquisitors
 
 <img src="https://github.com/Folia-Inquisitors.png" width=80 alt="Folia-Inquisitors">
+
+## Commands
+
+```text
+/election verify <code>
+/election status
+/election reload
+```
+
+## Notes
+
+- Voters only need to be in the Discord server; they do not need linked Minecraft accounts.
+- Candidates may win with only the Discord role. If they verify later during their term, the LuckPerms group is applied.
+- LuckPerms groups are not auto-created. Create them in LuckPerms and configure the names in `config.yml`.
+- LuckPerms itself must be installed on the server for Minecraft permission groups to sync. If LuckPerms is absent, the plugin still runs, but only Discord roles are assigned.
+- File proposals are staged and applied on the next normal restart, not instantly.
+- Files matching secret regexes are blocked before any public diff is posted.
