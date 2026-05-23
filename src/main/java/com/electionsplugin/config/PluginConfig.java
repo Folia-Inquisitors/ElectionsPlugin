@@ -27,7 +27,11 @@ public final class PluginConfig {
         return token != null && !token.isBlank() && !token.equals("PUT_TOKEN_HERE");
     }
 
-    public long guildId() {
+    public long serverId() {
+        String serverId = config.getString("discord.serverId", "");
+        if (serverId != null && !serverId.isBlank() && !serverId.startsWith("PUT_")) {
+            return parseSnowflake(serverId);
+        }
         return parseSnowflake(config.getString("discord.guildId", "0"));
     }
 

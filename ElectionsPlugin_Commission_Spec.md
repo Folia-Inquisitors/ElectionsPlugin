@@ -366,7 +366,7 @@ timezone: "America/New_York"
 
 discord:
   token: "PUT_TOKEN_HERE"
-  guildId: "PUT_GUILD_ID_HERE"
+  serverId: "PUT_SERVER_ID_HERE"
   forums:
     elections: "PUT_FORUM_ID_HERE"
     impeachment: "PUT_FORUM_ID_HERE"

@@ -154,9 +154,9 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
 
     @Override
     public void onReady(@NotNull ReadyEvent event) {
-        this.guild = event.getJDA().getGuildById(config.guildId());
+        this.guild = event.getJDA().getGuildById(config.serverId());
         if (guild == null) {
-            logger.severe("Discord guildId is not configured correctly. ElectionBot is connected but cannot manage the guild.");
+            logger.severe("Discord serverId is not configured correctly. ElectionBot is connected but cannot manage the server.");
             logger.info("Invite ElectionBot with: " + inviteUrl(event.getJDA().getSelfUser().getId()));
             return;
         }

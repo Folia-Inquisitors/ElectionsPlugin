@@ -30,12 +30,26 @@ The bot can manage election posts, voting, verification, policy proposals, impea
 
 ## Setup Overview
 
-1. Create a Discord application and bot in the Discord Developer Portal.
-2. Copy the bot token into the plugin config.
-3. Invite the bot to your Discord server.
-4. Enable the required Discord intents.
-5. Configure your Discord server ID, forum/channel IDs, role IDs, and LuckPerms groups.
-6. Start the Minecraft server with the plugin installed.
+1. Put the jar into the Folia server's `plugins` folder.
+2. Start the server once so `plugins/ElectionsPlugin/config.yml` is created.
+3. Stop the server.
+4. Fill in:
+   - `discord.token`
+   - `discord.serverId`
+   - Discord forum IDs
+   - approved-changes log channel ID
+   - LuckPerms group names
+   - excluded file paths
+5. Make sure the Discord bot has these permissions:
+   - View Channels
+   - Send Messages
+   - Send Messages in Threads
+   - Read Message History
+   - Add Reactions
+   - Manage Messages
+   - Manage Threads
+   - Manage Roles
+6. Start the server again.
 
 ## Building Instructions
 
