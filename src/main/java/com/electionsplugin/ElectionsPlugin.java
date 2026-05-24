@@ -126,6 +126,7 @@ public final class ElectionsPlugin extends JavaPlugin {
             try {
                 electionService.ensureMonthlyElection();
                 if (discordBotService != null && discordBotService.isReady()) {
+                    electionService.announceOpenElections(discordBotService);
                     electionService.closeDueElections(discordBotService);
                     impeachmentService.closeDueImpeachments(discordBotService);
                     policyService.closeDueProposals(discordBotService);

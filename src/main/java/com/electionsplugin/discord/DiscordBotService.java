@@ -6,6 +6,7 @@ import com.electionsplugin.config.PluginConfig;
 import com.electionsplugin.database.Database;
 import com.electionsplugin.election.CandidateRegistration;
 import com.electionsplugin.election.DiscordElectionBridge;
+import com.electionsplugin.election.ElectionRecord;
 import com.electionsplugin.election.ElectionResult;
 import com.electionsplugin.election.ElectionService;
 import com.electionsplugin.impeachment.DiscordImpeachmentBridge;
@@ -331,6 +332,24 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         worker.execute(() -> createAndPostProposal(event.getUser().getId(), session.selectedPath, proposedContent, response ->
             event.getHook().sendMessage(response).setEphemeral(true).queue()
         ));
+    }
+
+    @Override
+    public void publishElectionOpened(ElectionRecord election) {
+        if (!isReady()) {
+            return;
+        }
+        ForumChannel forum = guild.getForumChannelById(config.electionsForumId());
+        if (forum == null) {
+            logger.warning("Cannot publish election opening because the elections forum is not configured.");
+            return;
+        }
+        String content = "The presidential election is now open." +
+            "\nCreate a post in this forum to run for president." +
+            "\nVoting uses thumbs up and thumbs down reactions." +
+            "\nElection closes: " + format(Instant.ofEpochMilli(election.endsAt()).atZone(config.zoneId()));
+        forum.createForumPost("Election Open - " + election.periodKey(), MessageCreateData.fromContent(content))
+            .queue(null, failure -> logger.warning("Failed to publish election opening: " + failure.getMessage()));
     }
 
     @Override

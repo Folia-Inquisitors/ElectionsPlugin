@@ -42,6 +42,28 @@ public final class ElectionService {
         existingElection(TYPE_MONTHLY, periodKey).orElseGet(() -> createElection(TYPE_MONTHLY, periodKey, window.start(), window.end()));
     }
 
+    public void announceOpenElections(DiscordElectionBridge bridge) {
+        long now = Instant.now().toEpochMilli();
+        List<ElectionRecord> open = database.query(
+            "SELECT * FROM elections WHERE status = 'OPEN' AND starts_at <= ? AND ends_at >= ? AND opened_announced_at IS NULL",
+            statement -> {
+                Database.setLong(statement, 1, now);
+                Database.setLong(statement, 2, now);
+            },
+            this::mapElection
+        );
+        for (ElectionRecord election : open) {
+            bridge.publishElectionOpened(election);
+            database.update(
+                "UPDATE elections SET opened_announced_at = ? WHERE id = ?",
+                statement -> {
+                    Database.setLong(statement, 1, now);
+                    Database.setLong(statement, 2, election.id());
+                }
+            );
+        }
+    }
+
     public CandidateRegistration registerCandidate(String discordId, String threadId, String messageId) {
         ZonedDateTime now = ZonedDateTime.now(config.zoneId());
         Optional<ElectionRecord> activeSpecial = activeSpecialElection();

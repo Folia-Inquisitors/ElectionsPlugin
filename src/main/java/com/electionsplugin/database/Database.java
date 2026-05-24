@@ -64,6 +64,7 @@ public final class Database implements AutoCloseable {
                 UNIQUE(type, period_key)
             );
             """);
+        addColumnIfMissing("elections", "opened_announced_at", "INTEGER");
         execute("""
             CREATE TABLE IF NOT EXISTS candidates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,6 +164,18 @@ public final class Database implements AutoCloseable {
         try (Statement statement = connection.createStatement()) {
             statement.execute(sql);
         }
+    }
+
+    private synchronized void addColumnIfMissing(String table, String column, String definition) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet columns = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (columns.next()) {
+                if (column.equalsIgnoreCase(columns.getString("name"))) {
+                    return;
+                }
+            }
+        }
+        execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
     }
 
     public synchronized int update(String sql, Consumer<PreparedStatement> binder) {
