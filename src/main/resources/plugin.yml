@@ -20,7 +20,6 @@ permissions:
     description: Allows reloading ElectionsPlugin.
     default: op
 libraries:
-  - net.luckperms:api:5.5
   - net.dv8tion:JDA:6.4.1
   - org.xerial:sqlite-jdbc:3.49.1.0
   - com.google.code.gson:gson:2.13.1
