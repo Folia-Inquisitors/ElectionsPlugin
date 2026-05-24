@@ -254,6 +254,7 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
             case "cabinet-remove" -> handleCabinetRemove(event);
             case "propose" -> handlePolicyProposal(event);
             case "propose-upload" -> handlePolicyUploadProposal(event);
+            case "smoke-test" -> handleSmokeTest(event);
             default -> event.reply("Unknown election subcommand.").setEphemeral(true).queue();
         }
     }
@@ -545,6 +546,46 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         });
     }
 
+    private void handleSmokeTest(SlashCommandInteractionEvent event) {
+        Member member = event.getMember();
+        if (member == null || !member.hasPermission(Permission.MANAGE_SERVER)) {
+            event.reply("Only members with Manage Server can run the ElectionBot smoke test.").setEphemeral(true).queue();
+            return;
+        }
+        event.deferReply(true).queue();
+        worker.execute(() -> {
+            List<String> checks = new ArrayList<>();
+            checks.add(checkForum("elections forum", config.electionsForumId()));
+            checks.add(checkForum("impeachment forum", config.impeachmentForumId()));
+            checks.add(checkForum("policy proposals forum", config.policyForumId()));
+            checks.add(checkForum("polls forum", config.pollsForumId()));
+            checks.add(checkTextChannel("approved changes log", config.approvedChangesLogChannelId()));
+            checks.add(checkRole(config.presidentRoleName()));
+            checks.add(checkRole(config.cabinetRoleName(1)));
+            checks.add(checkRole(config.cabinetRoleName(2)));
+            checks.add(checkRole(config.cabinetRoleName(3)));
+
+            ForumChannel electionsForum = guild.getForumChannelById(config.electionsForumId());
+            if (electionsForum == null) {
+                event.getHook().sendMessage("Smoke test failed: elections forum is not configured.\n" + String.join("\n", checks)).setEphemeral(true).queue();
+                return;
+            }
+
+            String content = "ElectionBot smoke test." +
+                "\nIf you can see this post, the bot can post in the elections forum." +
+                "\nThe bot will add thumbs up and thumbs down reactions to this message.";
+            electionsForum.createForumPost("ElectionBot Smoke Test", MessageCreateData.fromContent(content))
+                .queue(post -> {
+                    post.getMessage().addReaction(THUMBS_UP).queue();
+                    post.getMessage().addReaction(THUMBS_DOWN).queue();
+                    String response = "Smoke test posted in the elections forum.\n\n" +
+                        String.join("\n", checks) +
+                        "\n\nRun `/election propose` next to test the file-browser GUI.";
+                    event.getHook().sendMessage(response).setEphemeral(true).queue();
+                }, failure -> event.getHook().sendMessage("Smoke test failed to post: " + failure.getMessage()).setEphemeral(true).queue());
+        });
+    }
+
     private void openPolicyBrowser(SlashCommandInteractionEvent event) {
         if (!policyService.canSubmitPolicy(event.getUser().getId())) {
             event.reply("Only the president or cabinet members can submit policy proposals.").setEphemeral(true).queue();
@@ -774,7 +815,8 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
                         .addOption(OptionType.STRING, "content", "Full replacement content for direct mode.", false),
                     new SubcommandData("propose-upload", "Propose a change using an uploaded replacement file.")
                         .addOption(OptionType.STRING, "file", "Relative server file path.", true)
-                        .addOption(OptionType.ATTACHMENT, "attachment", "Replacement .yml, .yaml, or .json file.", true)
+                        .addOption(OptionType.ATTACHMENT, "attachment", "Replacement .yml, .yaml, or .json file.", true),
+                    new SubcommandData("smoke-test", "Post a harmless demo message and check ElectionBot setup.")
                 )
         ).queue(null, failure -> logger.warning("Failed to register Discord slash commands: " + failure.getMessage()));
     }
@@ -859,6 +901,18 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         return "https://discord.com/oauth2/authorize?client_id=" + clientId +
             "&permissions=" + permissions +
             "&scope=bot%20applications.commands";
+    }
+
+    private String checkForum(String label, long channelId) {
+        return (channelId != 0L && guild.getForumChannelById(channelId) != null ? "[OK] " : "[MISSING] ") + label;
+    }
+
+    private String checkTextChannel(String label, long channelId) {
+        return (channelId != 0L && guild.getTextChannelById(channelId) != null ? "[OK] " : "[MISSING] ") + label;
+    }
+
+    private String checkRole(String roleName) {
+        return (roleByName(roleName) != null ? "[OK] role " : "[MISSING] role ") + roleName;
     }
 
     private String format(java.time.ZonedDateTime value) {
