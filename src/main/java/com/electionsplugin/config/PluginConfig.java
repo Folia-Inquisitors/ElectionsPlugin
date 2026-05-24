@@ -55,6 +55,14 @@ public final class PluginConfig {
         return parseSnowflake(config.getString("discord.channels.approvedChangesLog", "0"));
     }
 
+    public long electionInfoChannelId() {
+        return parseSnowflake(config.getString("discord.channels.electionInfo", "0"));
+    }
+
+    public String messageTemplate(String key, String fallback) {
+        return config.getString("messages." + key, fallback);
+    }
+
     public boolean autoCreateDiscordRoles() {
         return config.getBoolean("roles.autoCreateDiscordRoles", true);
     }
@@ -151,6 +159,22 @@ public final class PluginConfig {
 
     public long policyMaxFileBytes() {
         return config.getLong("policy.maxFileBytes", 200000);
+    }
+
+    public boolean policyAllowDiscordOwnerBypass() {
+        return config.getBoolean("policy.allowDiscordOwnerBypass", true);
+    }
+
+    public boolean policyAllowDiscordManageServerBypass() {
+        return config.getBoolean("policy.allowDiscordManageServerBypass", false);
+    }
+
+    public List<String> policyAdminBypassRoles() {
+        return config.getStringList("policy.adminBypassRoles");
+    }
+
+    public List<String> policyPluginJarSearchPaths() {
+        return config.getStringList("policy.pluginJarSearchPaths");
     }
 
     public List<String> allowedExtensions() {

@@ -2,6 +2,7 @@ package com.electionsplugin.command;
 
 import com.electionsplugin.ElectionsPlugin;
 import com.electionsplugin.election.ElectionService;
+import com.electionsplugin.policy.PolicyService;
 import com.electionsplugin.role.RoleSyncService;
 import com.electionsplugin.verification.VerificationService;
 import org.bukkit.command.Command;
@@ -18,18 +19,20 @@ public final class ElectionCommand implements CommandExecutor, TabCompleter {
     private final VerificationService verificationService;
     private final ElectionService electionService;
     private final RoleSyncService roleSyncService;
+    private final PolicyService policyService;
 
-    public ElectionCommand(ElectionsPlugin plugin, VerificationService verificationService, ElectionService electionService, RoleSyncService roleSyncService) {
+    public ElectionCommand(ElectionsPlugin plugin, VerificationService verificationService, ElectionService electionService, RoleSyncService roleSyncService, PolicyService policyService) {
         this.plugin = plugin;
         this.verificationService = verificationService;
         this.electionService = electionService;
         this.roleSyncService = roleSyncService;
+        this.policyService = policyService;
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
-            sender.sendMessage("Usage: /election <verify|status|reload>");
+            sender.sendMessage("Usage: /election <verify|status|reload|force-change>");
             return true;
         }
 
@@ -37,7 +40,8 @@ public final class ElectionCommand implements CommandExecutor, TabCompleter {
             case "verify" -> verify(sender, args);
             case "status" -> status(sender);
             case "reload" -> reload(sender);
-            default -> sender.sendMessage("Unknown election command. Use /election <verify|status|reload>.");
+            case "force-change" -> forceChange(sender, args);
+            default -> sender.sendMessage("Unknown election command. Use /election <verify|status|reload|force-change>.");
         }
         return true;
     }
@@ -45,7 +49,7 @@ public final class ElectionCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return List.of("verify", "status", "reload").stream()
+            return List.of("verify", "status", "reload", "force-change").stream()
                 .filter(value -> value.startsWith(args[0].toLowerCase(Locale.ROOT)))
                 .toList();
         }
@@ -85,5 +89,24 @@ public final class ElectionCommand implements CommandExecutor, TabCompleter {
         }
         plugin.reloadPluginConfig();
         sender.sendMessage("ElectionsPlugin config reloaded.");
+    }
+
+    private void forceChange(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("electionsplugin.admin")) {
+            sender.sendMessage("You do not have permission to force policy changes.");
+            return;
+        }
+        if (args.length < 2) {
+            sender.sendMessage("Usage: /election force-change <proposal-id>");
+            return;
+        }
+        long proposalId;
+        try {
+            proposalId = Long.parseLong(args[1]);
+        } catch (NumberFormatException exception) {
+            sender.sendMessage("Proposal id must be a number.");
+            return;
+        }
+        sender.sendMessage(policyService.forceChange(proposalId));
     }
 }

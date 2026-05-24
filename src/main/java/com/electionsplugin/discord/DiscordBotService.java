@@ -25,6 +25,7 @@ import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.channel.concrete.ForumChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
@@ -48,6 +49,7 @@ import net.dv8tion.jda.api.components.textinput.TextInputStyle;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SubcommandData;
+import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.modals.Modal;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.utils.messages.MessageCreateData;
@@ -59,7 +61,9 @@ import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.logging.Logger;
@@ -68,6 +72,7 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
     private static final Emoji THUMBS_UP = Emoji.fromUnicode("U+1F44D");
     private static final Emoji THUMBS_DOWN = Emoji.fromUnicode("U+1F44E");
     private static final String POLICY_SELECT_FILE = "policy:file-select";
+    private static final String POLICY_FILES_BACK = "policy:files-back";
     private static final String POLICY_FILES_PREV = "policy:files-prev";
     private static final String POLICY_FILES_NEXT = "policy:files-next";
     private static final String POLICY_PREVIEW_PREV = "policy:preview-prev";
@@ -252,8 +257,8 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
             case "status" -> event.reply(electionService.statusLine()).setEphemeral(true).queue();
             case "cabinet-set" -> handleCabinetSet(event);
             case "cabinet-remove" -> handleCabinetRemove(event);
-            case "propose" -> handlePolicyProposal(event);
-            case "propose-upload" -> handlePolicyUploadProposal(event);
+            case "browse" -> openPolicyBrowser(event);
+            case "force-change" -> handleForceChange(event);
             case "smoke-test" -> handleSmokeTest(event);
             default -> event.reply("Unknown election subcommand.").setEphemeral(true).queue();
         }
@@ -264,17 +269,30 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         if (!POLICY_SELECT_FILE.equals(event.getComponentId())) {
             return;
         }
+        event.deferReply(true).queue();
         worker.execute(() -> {
             PolicyBrowserSession session = policySessions.computeIfAbsent(event.getUser().getId(), ignored -> new PolicyBrowserSession());
-            List<PolicyService.FileEntry> files = policyService.listEditableFiles(MAX_BROWSER_FILES);
-            int selectedIndex = parseInt(event.getValues().isEmpty() ? "-1" : event.getValues().getFirst(), -1);
-            if (selectedIndex < 0 || selectedIndex >= files.size()) {
-                event.reply("That file selection expired. Run `/election propose` again.").setEphemeral(true).queue();
+            PolicyService.DirectoryListing listing = policyService.listEditableDirectory(session.currentPath, MAX_BROWSER_FILES);
+            String selectedValue = event.getValues().isEmpty() ? "" : event.getValues().getFirst();
+            boolean directory = selectedValue.startsWith("D:");
+            boolean file = selectedValue.startsWith("F:");
+            int selectedIndex = parseInt(selectedValue.length() > 2 ? selectedValue.substring(2) : "-1", -1);
+            if ((!directory && !file) || selectedIndex < 0 || selectedIndex >= listing.entries().size()) {
+                event.getHook().sendMessage("That file selection expired. Run `/election browse` again.").setEphemeral(true).queue();
                 return;
             }
-            session.selectedPath = files.get(selectedIndex).relativePath();
+            PolicyService.BrowserEntry entry = listing.entries().get(selectedIndex);
+            if (entry.directory()) {
+                session.currentPath = entry.relativePath();
+                session.filePage = 0;
+                session.selectedPath = null;
+                session.previewPage = 0;
+                replyFileBrowser(event.getHook(), session);
+                return;
+            }
+            session.selectedPath = entry.relativePath();
             session.previewPage = 0;
-            replyPreview(event, session);
+            replyPreview(event.getHook(), session);
         });
     }
 
@@ -284,32 +302,43 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         if (!id.startsWith("policy:")) {
             return;
         }
+        if (POLICY_EDIT.equals(id)) {
+            PolicyBrowserSession session = policySessions.computeIfAbsent(event.getUser().getId(), ignored -> new PolicyBrowserSession());
+            replyEditModal(event, session);
+            return;
+        }
+        event.deferReply(true).queue();
         worker.execute(() -> {
             PolicyBrowserSession session = policySessions.computeIfAbsent(event.getUser().getId(), ignored -> new PolicyBrowserSession());
             switch (id) {
+                case POLICY_FILES_BACK -> {
+                    session.currentPath = parentPath(session.currentPath);
+                    session.filePage = 0;
+                    session.selectedPath = null;
+                    replyFileBrowser(event.getHook(), session);
+                }
                 case POLICY_FILES_PREV -> {
                     session.filePage = Math.max(0, session.filePage - 1);
-                    replyFileBrowser(event, session);
+                    replyFileBrowser(event.getHook(), session);
                 }
                 case POLICY_FILES_NEXT -> {
                     session.filePage++;
-                    replyFileBrowser(event, session);
+                    replyFileBrowser(event.getHook(), session);
                 }
                 case POLICY_PREVIEW_PREV -> {
                     session.previewPage = Math.max(0, session.previewPage - 1);
-                    replyPreview(event, session);
+                    replyPreview(event.getHook(), session);
                 }
                 case POLICY_PREVIEW_NEXT -> {
                     session.previewPage++;
-                    replyPreview(event, session);
+                    replyPreview(event.getHook(), session);
                 }
-                case POLICY_BACK -> replyFileBrowser(event, session);
+                case POLICY_BACK -> replyFileBrowser(event.getHook(), session);
                 case POLICY_CANCEL -> {
                     policySessions.remove(event.getUser().getId());
-                    event.reply("Policy file browser closed.").setEphemeral(true).queue();
+                    event.getHook().sendMessage("Policy file browser closed.").setEphemeral(true).queue();
                 }
-                case POLICY_EDIT -> replyEditModal(event, session);
-                default -> event.reply("Unknown policy action.").setEphemeral(true).queue();
+                default -> event.getHook().sendMessage("Unknown policy action.").setEphemeral(true).queue();
             }
         });
     }
@@ -321,7 +350,7 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         }
         PolicyBrowserSession session = policySessions.get(event.getUser().getId());
         if (session == null || session.selectedPath == null) {
-            event.reply("Your policy editor session expired. Run `/election propose` again.").setEphemeral(true).queue();
+            event.reply("Your policy editor session expired. Run `/election browse` again.").setEphemeral(true).queue();
             return;
         }
         String proposedContent = event.getValues().stream()
@@ -332,7 +361,7 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         event.deferReply(true).queue();
         worker.execute(() -> createAndPostProposal(event.getUser().getId(), session.selectedPath, proposedContent, response ->
             event.getHook().sendMessage(response).setEphemeral(true).queue()
-        ));
+        , session.adminBypass));
     }
 
     @Override
@@ -345,12 +374,24 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
             logger.warning("Cannot publish election opening because the elections forum is not configured.");
             return;
         }
-        String content = "The presidential election is now open." +
-            "\nCreate a post in this forum to run for president." +
-            "\nVoting uses thumbs up and thumbs down reactions." +
-            "\nElection closes: " + format(Instant.ofEpochMilli(election.endsAt()).atZone(config.zoneId()));
-        forum.createForumPost("Election Open - " + election.periodKey(), MessageCreateData.fromContent(content))
+        Map<String, String> values = Map.of(
+            "period", election.periodKey(),
+            "ends_at", format(Instant.ofEpochMilli(election.endsAt()).atZone(config.zoneId())),
+            "minimum_votes", String.valueOf(config.electionMinimumVotes()),
+            "minimum_votes_line", minimumVotesLine(config.electionMinimumVotes(), "election")
+        );
+        String title = renderMessage("electionOpenTitle", "Election Open - {period}", values);
+        String content = renderMessage("electionOpen", """
+            The presidential election is now open.
+            Create a post in this forum to run for president.
+            Voting uses thumbs up and thumbs down reactions.
+            The candidate with the highest net thumbs up score wins.
+            {minimum_votes_line}
+            Election closes: {ends_at}
+            """, values);
+        forum.createForumPost(title, MessageCreateData.fromContent(content))
             .queue(null, failure -> logger.warning("Failed to publish election opening: " + failure.getMessage()));
+        sendElectionInfo(content);
     }
 
     @Override
@@ -365,19 +406,36 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         }
         String content;
         if (result.winner() == null) {
-            content = "Election closed with no winner" + (result.tie() ? " because the top result was tied." : ".") +
-                "\nNext election starts: " + format(result.nextStart()) +
-                "\nNext election ends: " + format(result.nextEnd());
+            content = renderMessage("electionNoWinner", """
+                Election closed with no winner{tie_reason}
+                Next election starts: {next_start}
+                Next election ends: {next_end}
+                """, Map.of(
+                "tie_reason", result.tie() ? " because the top result was tied." : ".",
+                "next_start", format(result.nextStart()),
+                "next_end", format(result.nextEnd())
+            ));
         } else {
-            content = "Election winner: <@" + result.winner().discordId() + ">" +
-                "\nNet score: " + result.winner().netScore() +
-                "\nThumbs up: " + result.winner().upvotes() +
-                "\nThumbs down: " + result.winner().downvotes() +
-                "\nNext election starts: " + format(result.nextStart()) +
-                "\nNext election ends: " + format(result.nextEnd());
+            content = renderMessage("electionWinner", """
+                Election winner: {winner_mention}
+                Net score: {net_score}
+                Thumbs up: {upvotes}
+                Thumbs down: {downvotes}
+                Next election starts: {next_start}
+                Next election ends: {next_end}
+                """, Map.of(
+                "winner_mention", "<@" + result.winner().discordId() + ">",
+                "net_score", String.valueOf(result.winner().netScore()),
+                "upvotes", String.valueOf(result.winner().upvotes()),
+                "downvotes", String.valueOf(result.winner().downvotes()),
+                "next_start", format(result.nextStart()),
+                "next_end", format(result.nextEnd())
+            ));
         }
-        forum.createForumPost("Election Result - " + result.election().periodKey(), MessageCreateData.fromContent(content))
+        String title = renderMessage("electionResultTitle", "Election Result - {period}", Map.of("period", result.election().periodKey()));
+        forum.createForumPost(title, MessageCreateData.fromContent(content))
             .queue(null, failure -> logger.warning("Failed to publish election result: " + failure.getMessage()));
+        sendElectionInfo(content);
     }
 
     @Override
@@ -429,7 +487,15 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
             logger.warning("Approved changes log channel is not a text channel or is not configured.");
             return;
         }
-        channel.sendMessage("Approved policy change staged for next restart: `" + proposal.relativePath() + "` by <@" + proposal.proposerDiscordId() + ">.").queue();
+        String content = renderMessage("approvedPolicy", """
+            Approved policy change processed: `{file}` by {proposer_mention}.
+            {stage_status}
+            """, Map.of(
+            "file", proposal.relativePath(),
+            "proposer_mention", "<@" + proposal.proposerDiscordId() + ">",
+            "stage_status", policyService.stagedStatusLine(proposal.id())
+        ));
+        channel.sendMessage(content).queue();
     }
 
     @Override
@@ -513,9 +579,10 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
             return;
         }
         event.deferReply(true).queue();
+        boolean adminBypass = canUsePolicyAdminBypass(event.getMember());
         worker.execute(() -> createAndPostProposal(event.getUser().getId(), fileOption.getAsString(), contentOption.getAsString(), response ->
             event.getHook().sendMessage(response).setEphemeral(true).queue()
-        ));
+        , adminBypass));
     }
 
     private void handlePolicyUploadProposal(SlashCommandInteractionEvent event) {
@@ -531,18 +598,108 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
             return;
         }
         event.deferReply(true).queue();
+        boolean adminBypass = canUsePolicyAdminBypass(event.getMember());
         attachment.getProxy().download(0, (int) config.policyMaxFileBytes()).thenAccept(inputStream -> worker.execute(() -> {
             try (InputStream stream = inputStream) {
                 String content = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
                 createAndPostProposal(event.getUser().getId(), fileOption.getAsString(), content, response ->
                     event.getHook().sendMessage(response).setEphemeral(true).queue()
-                );
+                , adminBypass);
             } catch (Exception exception) {
                 event.getHook().sendMessage("Could not read uploaded file: " + exception.getMessage()).setEphemeral(true).queue();
             }
         })).exceptionally(exception -> {
             event.getHook().sendMessage("Could not download uploaded file: " + exception.getMessage()).setEphemeral(true).queue();
             return null;
+        });
+    }
+
+    private void handleDebugProposal(SlashCommandInteractionEvent event) {
+        if (!isDiscordOwner(event.getMember())) {
+            event.reply("Only the Discord server owner can use proposal debug.").setEphemeral(true).queue();
+            return;
+        }
+        var proposalOption = event.getOption("proposal-id");
+        event.deferReply(true).queue();
+        worker.execute(() -> {
+            try {
+                ProposalRecord proposal = resolveProposal(event, proposalOption == null ? null : proposalOption.getAsLong()).orElse(null);
+                if (proposal == null) {
+                    event.getHook().sendMessage("No proposal found. Run this inside a policy proposal thread, or pass `proposal-id`.").setEphemeral(true).queue();
+                    return;
+                }
+                String base = "Proposal `" + proposal.id() + "` debug" +
+                    "\nStatus: `" + proposal.status() + "`" +
+                    "\nFile: `" + proposal.relativePath() + "`" +
+                    "\nPoll thread: `" + nullToNone(proposal.pollThreadId()) + "`" +
+                    "\nPoll message: `" + nullToNone(proposal.pollMessageId()) + "`" +
+                    "\nDatabase votes: 👍 " + proposal.upvotes() + " / 👎 " + proposal.downvotes() + " / net " + proposal.netScore() +
+                    "\n" + policyService.stagedStatusLine(proposal.id());
+
+                if (proposal.pollThreadId() == null || proposal.pollMessageId() == null) {
+                    event.getHook().sendMessage(base + "\nDiscord message reactions: no poll message has been posted yet.").setEphemeral(true).queue();
+                    return;
+                }
+                ThreadChannel thread = guild.getThreadChannelById(proposal.pollThreadId());
+                if (thread == null) {
+                    event.getHook().sendMessage(base + "\nDiscord message reactions: poll thread was not found.").setEphemeral(true).queue();
+                    return;
+                }
+                thread.retrieveMessageById(proposal.pollMessageId()).queue(message ->
+                    event.getHook().sendMessage(base + "\nDiscord message reactions: " + reactionDebugLine(message)).setEphemeral(true).queue(),
+                    failure -> event.getHook().sendMessage(base + "\nDiscord message reactions: failed to fetch poll message: " + failure.getMessage()).setEphemeral(true).queue()
+                );
+            } catch (Exception exception) {
+                logger.warning("Proposal debug failed: " + exception.getMessage());
+                event.getHook().sendMessage("Proposal debug failed: " + exception.getMessage()).setEphemeral(true).queue();
+            }
+        });
+    }
+
+    private void handleValidateProposal(SlashCommandInteractionEvent event) {
+        if (!isDiscordOwner(event.getMember())) {
+            event.reply("Only the Discord server owner can validate policy proposals.").setEphemeral(true).queue();
+            return;
+        }
+        var proposalOption = event.getOption("proposal-id");
+        event.deferReply(true).queue();
+        worker.execute(() -> {
+            try {
+                ProposalRecord proposal = resolveProposal(event, proposalOption == null ? null : proposalOption.getAsLong()).orElse(null);
+                if (proposal == null) {
+                    event.getHook().sendMessage("No proposal found. Run this inside a policy proposal thread, or pass `proposal-id`.").setEphemeral(true).queue();
+                    return;
+                }
+                PolicyService.ValidationReport report = policyService.validateProposal(proposal);
+                event.getHook().sendMessage(report.discordSummary()).setEphemeral(true).queue();
+            } catch (Exception exception) {
+                logger.warning("Proposal validation failed: " + exception.getMessage());
+                event.getHook().sendMessage("Proposal validation failed: " + exception.getMessage()).setEphemeral(true).queue();
+            }
+        });
+    }
+
+    private void handleForceChange(SlashCommandInteractionEvent event) {
+        if (!isDiscordOwner(event.getMember())) {
+            event.reply("Only the Discord server owner can force policy changes.").setEphemeral(true).queue();
+            return;
+        }
+        var proposalOption = event.getOption("proposal-id");
+        event.deferReply(true).queue();
+        worker.execute(() -> {
+            try {
+                ProposalRecord proposal = resolveProposal(event, proposalOption == null ? null : proposalOption.getAsLong()).orElse(null);
+                if (proposal == null) {
+                    event.getHook().sendMessage("No proposal found. Run this inside a policy proposal thread, or pass `proposal-id`.").setEphemeral(true).queue();
+                    return;
+                }
+                String result = policyService.forceChange(proposal.id());
+                logger.info("Owner forced policy proposal " + proposal.id() + ": " + result);
+                event.getHook().sendMessage(result).setEphemeral(true).queue();
+            } catch (Exception exception) {
+                logger.warning("Force policy change failed: " + exception.getMessage());
+                event.getHook().sendMessage("Force policy change failed: " + exception.getMessage()).setEphemeral(true).queue();
+            }
         });
     }
 
@@ -580,69 +737,85 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
                     post.getMessage().addReaction(THUMBS_DOWN).queue();
                     String response = "Smoke test posted in the elections forum.\n\n" +
                         String.join("\n", checks) +
-                        "\n\nRun `/election propose` next to test the file-browser GUI.";
+                        "\n\nRun `/election browse` next to test the file-browser GUI.";
                     event.getHook().sendMessage(response).setEphemeral(true).queue();
-                }, failure -> event.getHook().sendMessage("Smoke test failed to post: " + failure.getMessage()).setEphemeral(true).queue());
+                }, failure -> event.getHook().sendMessage("Smoke test failed to post: " + friendlyDiscordFailure("elections forum", failure)).setEphemeral(true).queue());
         });
     }
 
     private void openPolicyBrowser(SlashCommandInteractionEvent event) {
-        if (!policyService.canSubmitPolicy(event.getUser().getId())) {
-            event.reply("Only the president or cabinet members can submit policy proposals.").setEphemeral(true).queue();
-            return;
-        }
         event.deferReply(true).queue();
+        boolean adminBypass = canUsePolicyAdminBypass(event.getMember());
         worker.execute(() -> {
+            if (!adminBypass && !policyService.canSubmitPolicy(event.getUser().getId())) {
+                event.getHook().sendMessage("Only the president, cabinet members, or configured Discord test admins can submit policy proposals.").setEphemeral(true).queue();
+                return;
+            }
             PolicyBrowserSession session = new PolicyBrowserSession();
+            session.adminBypass = adminBypass;
             policySessions.put(event.getUser().getId(), session);
             BrowserMessage message = buildFileBrowserMessage(session);
-            event.getHook().sendMessage(message.content()).setEphemeral(true).addComponents(message.components()).queue();
+            sendBrowserMessage(event.getHook(), message);
         });
     }
 
-    private void replyFileBrowser(ButtonInteractionEvent event, PolicyBrowserSession session) {
+    private void replyFileBrowser(InteractionHook hook, PolicyBrowserSession session) {
         BrowserMessage message = buildFileBrowserMessage(session);
-        event.reply(message.content()).setEphemeral(true).addComponents(message.components()).queue();
+        sendBrowserMessage(hook, message);
     }
 
     private BrowserMessage buildFileBrowserMessage(PolicyBrowserSession session) {
-        List<PolicyService.FileEntry> files = policyService.listEditableFiles(MAX_BROWSER_FILES);
-        if (files.isEmpty()) {
-            return new BrowserMessage("No editable `.yml`, `.yaml`, or `.json` files were found with the current config.", List.of());
+        PolicyService.DirectoryListing listing = policyService.listEditableDirectory(session.currentPath, MAX_BROWSER_FILES);
+        session.currentPath = listing.relativePath();
+        List<PolicyService.BrowserEntry> entries = listing.entries();
+        if (entries.isEmpty()) {
+            List<net.dv8tion.jda.api.components.MessageTopLevelComponent> emptyComponents = new ArrayList<>();
+            List<Button> buttons = new ArrayList<>();
+            if (!session.currentPath.isBlank()) {
+                buttons.add(Button.secondary(POLICY_FILES_BACK, "Back"));
+            }
+            buttons.add(Button.danger(POLICY_CANCEL, "Close"));
+            emptyComponents.add(ActionRow.of(buttons));
+            return new BrowserMessage("No editable `.yml`, `.yaml`, or `.json` files were found in `" + displayPath(session.currentPath) + "`.", emptyComponents);
         }
-        int totalPages = Math.max(1, (int) Math.ceil((double) files.size() / FILES_PER_PAGE));
+        int totalPages = Math.max(1, (int) Math.ceil((double) entries.size() / FILES_PER_PAGE));
         session.filePage = Math.max(0, Math.min(session.filePage, totalPages - 1));
         int start = session.filePage * FILES_PER_PAGE;
-        int end = Math.min(files.size(), start + FILES_PER_PAGE);
+        int end = Math.min(entries.size(), start + FILES_PER_PAGE);
 
         StringSelectMenu.Builder select = StringSelectMenu.create(POLICY_SELECT_FILE)
-            .setPlaceholder("Choose a file to preview and edit")
+            .setPlaceholder("Choose a folder or file")
             .setRequiredRange(1, 1);
         for (int index = start; index < end; index++) {
-            PolicyService.FileEntry file = files.get(index);
-            select.addOption(shorten(file.relativePath(), 95), String.valueOf(index), humanSize(file.size()));
+            PolicyService.BrowserEntry entry = entries.get(index);
+            String label = (entry.directory() ? "[Folder] " : "[File] ") + entryName(entry.relativePath());
+            String value = (entry.directory() ? "D:" : "F:") + index;
+            String description = entry.directory() ? entry.relativePath() : humanSize(entry.size()) + " - " + entry.relativePath();
+            select.addOption(shorten(label, 95), value, shorten(description, 95));
         }
 
         List<net.dv8tion.jda.api.components.MessageTopLevelComponent> components = new ArrayList<>();
         components.add(ActionRow.of(select.build()));
-        components.add(ActionRow.of(
-            button(Button.secondary(POLICY_FILES_PREV, "Previous"), session.filePage <= 0),
-            button(Button.secondary(POLICY_FILES_NEXT, "Next"), session.filePage >= totalPages - 1),
-            Button.danger(POLICY_CANCEL, "Close")
-        ));
-        String content = "Policy file browser\nPage " + (session.filePage + 1) + " of " + totalPages +
-            "\nShowing files allowed by the current ElectionsPlugin config.";
+        List<Button> buttons = new ArrayList<>();
+        if (!session.currentPath.isBlank()) {
+            buttons.add(Button.secondary(POLICY_FILES_BACK, "Back"));
+        }
+        if (totalPages > 1 && session.filePage > 0) {
+            buttons.add(Button.secondary(POLICY_FILES_PREV, "Previous"));
+        }
+        if (totalPages > 1 && session.filePage < totalPages - 1) {
+            buttons.add(Button.secondary(POLICY_FILES_NEXT, "Next"));
+        }
+        buttons.add(Button.danger(POLICY_CANCEL, "Close"));
+        components.add(ActionRow.of(buttons));
+        String content = "Policy file browser\nFolder: `" + displayPath(session.currentPath) + "`\nPage " + (session.filePage + 1) + " of " + totalPages +
+            "\nFolders only appear when they contain editable files allowed by the current ElectionsPlugin config.";
         return new BrowserMessage(content, components);
     }
 
-    private void replyPreview(StringSelectInteractionEvent event, PolicyBrowserSession session) {
+    private void replyPreview(InteractionHook hook, PolicyBrowserSession session) {
         BrowserMessage message = buildPreviewMessage(session);
-        event.reply(message.content()).setEphemeral(true).addComponents(message.components()).queue();
-    }
-
-    private void replyPreview(ButtonInteractionEvent event, PolicyBrowserSession session) {
-        BrowserMessage message = buildPreviewMessage(session);
-        event.reply(message.content()).setEphemeral(true).addComponents(message.components()).queue();
+        sendBrowserMessage(hook, message);
     }
 
     private BrowserMessage buildPreviewMessage(PolicyBrowserSession session) {
@@ -652,7 +825,7 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         PolicyService.FilePreview preview = policyService.previewFile(session.selectedPath, session.previewPage, PREVIEW_CHARS);
         if (!preview.success()) {
             return new BrowserMessage(preview.message(), List.of(ActionRow.of(
-                Button.secondary(POLICY_BACK, "Back to files"),
+                Button.secondary(POLICY_BACK, "Back to folder"),
                 Button.danger(POLICY_CANCEL, "Close")
             )));
         }
@@ -660,13 +833,17 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         String pageContent = preview.pageContent().isBlank() ? "# empty file" : escapeCodeBlock(preview.pageContent());
         String content = "Previewing `" + preview.relativePath() + "`\nPage " + (preview.page() + 1) + " of " + preview.totalPages() +
             "\n```yaml\n" + pageContent + "\n```";
-        List<net.dv8tion.jda.api.components.MessageTopLevelComponent> components = List.of(ActionRow.of(
-            button(Button.secondary(POLICY_PREVIEW_PREV, "Previous"), preview.page() <= 0),
-            button(Button.secondary(POLICY_PREVIEW_NEXT, "Next"), preview.page() >= preview.totalPages() - 1),
-            Button.primary(POLICY_EDIT, "Edit"),
-            Button.secondary(POLICY_BACK, "Files"),
-            Button.danger(POLICY_CANCEL, "Close")
-        ));
+        List<Button> buttons = new ArrayList<>();
+        if (preview.page() > 0) {
+            buttons.add(Button.secondary(POLICY_PREVIEW_PREV, "Previous"));
+        }
+        if (preview.page() < preview.totalPages() - 1) {
+            buttons.add(Button.secondary(POLICY_PREVIEW_NEXT, "Next"));
+        }
+        buttons.add(Button.primary(POLICY_EDIT, "Edit"));
+        buttons.add(Button.secondary(POLICY_BACK, "Back"));
+        buttons.add(Button.danger(POLICY_CANCEL, "Close"));
+        List<net.dv8tion.jda.api.components.MessageTopLevelComponent> components = List.of(ActionRow.of(buttons));
         return new BrowserMessage(content, components);
     }
 
@@ -694,36 +871,69 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         event.replyModal(modal).queue();
     }
 
-    private void createAndPostProposal(String userId, String relativePath, String proposedContent, ProposalResponder responder) {
-        PolicyResult result = policyService.createProposal(userId, relativePath, proposedContent);
-        if (!result.success()) {
-            responder.reply(result.message());
-            return;
+    private void createAndPostProposal(String userId, String relativePath, String proposedContent, ProposalResponder responder, boolean adminBypass) {
+        try {
+            logger.info("Creating policy proposal for " + relativePath + " by Discord user " + userId + ".");
+            PolicyResult result = policyService.createProposal(userId, relativePath, proposedContent, adminBypass);
+            if (!result.success()) {
+                logger.info("Policy proposal rejected before posting: " + result.message());
+                responder.reply(result.message());
+                return;
+            }
+            postPolicyProposal(result.proposal(), responder);
+        } catch (Exception exception) {
+            logger.warning("Failed to create/post policy proposal: " + exception.getMessage());
+            responder.reply("Policy proposal failed: " + exception.getMessage());
         }
-        postPolicyProposal(result.proposal());
-        responder.reply("Proposal posted for public voting.");
     }
 
-    private void postPolicyProposal(ProposalRecord proposal) {
+    private void postPolicyProposal(ProposalRecord proposal, ProposalResponder responder) {
         ForumChannel forum = guild.getForumChannelById(config.pollsForumId());
         if (forum == null) {
-            logger.warning("Cannot post policy proposal because polls forum is not configured.");
+            String message = "Cannot post policy proposal because polls forum is not configured.";
+            logger.warning(message);
+            responder.reply(message);
             return;
         }
         String diff = proposal.diff();
         String visibleDiff = diff.length() > 1600 ? diff.substring(0, 1600) + "\n... diff truncated ..." : diff;
-        String content = "Policy proposal by <@" + proposal.proposerDiscordId() + ">\n" +
-            "File: `" + proposal.relativePath() + "`\n" +
-            "Voting closes: " + format(Instant.ofEpochMilli(proposal.closesAt()).atZone(config.zoneId())) + "\n\n" +
-            "```diff\n" + visibleDiff + "\n```";
-        forum.createForumPost("Policy Proposal #" + proposal.id() + " - " + proposal.relativePath(), MessageCreateData.fromContent(content))
+        Map<String, String> values = Map.of(
+            "proposer_mention", "<@" + proposal.proposerDiscordId() + ">",
+            "proposal_id", String.valueOf(proposal.id()),
+            "file", proposal.relativePath(),
+            "closes_at", format(Instant.ofEpochMilli(proposal.closesAt()).atZone(config.zoneId())),
+            "minimum_votes", String.valueOf(config.policyMinimumVotes()),
+            "minimum_votes_line", minimumVotesLine(config.policyMinimumVotes(), "policy proposal"),
+            "diff", visibleDiff
+        );
+        String content = renderMessage("policyProposal", """
+            Policy proposal by {proposer_mention}
+            Proposal ID: `{proposal_id}`
+            File: `{file}`
+            Voting closes: {closes_at}
+            Vote by thumbs up or thumbs down.
+            If this post has a positive net score when voting closes, it will be implemented.
+            {minimum_votes_line}
+
+            ```diff
+            {diff}
+            ```
+            """, values);
+        String title = renderMessage("policyProposalTitle", "Policy Proposal #{proposal_id} - {file}", values);
+        forum.createForumPost(title, MessageCreateData.fromContent(content))
             .queue(post -> {
                 ThreadChannel thread = post.getThreadChannel();
                 String messageId = post.getMessage().getId();
                 policyService.markProposalPosted(proposal.id(), thread.getId(), messageId);
                 post.getMessage().addReaction(THUMBS_UP).queue();
                 post.getMessage().addReaction(THUMBS_DOWN).queue();
-            }, failure -> logger.warning("Failed to post policy proposal: " + failure.getMessage()));
+                logger.info("Posted policy proposal " + proposal.id() + " in poll thread " + thread.getId() + " message " + messageId + ".");
+                responder.reply("Proposal `" + proposal.id() + "` posted for public voting.");
+            }, failure -> {
+                String message = friendlyDiscordFailure("polls forum", failure);
+                logger.warning("Failed to post policy proposal " + proposal.id() + ": " + message);
+                responder.reply("Failed to post policy proposal: " + message);
+            });
     }
 
     private void notifyElectionPostRejected(String mention, String message) {
@@ -733,6 +943,33 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         }
         forum.createForumPost("Election Notice", MessageCreateData.fromContent(mention + " " + message))
             .queue(null, failure -> logger.warning("Failed to post election notice: " + failure.getMessage()));
+    }
+
+    private void sendElectionInfo(String content) {
+        if (config.electionInfoChannelId() == 0L) {
+            return;
+        }
+        TextChannel channel = guild.getTextChannelById(config.electionInfoChannelId());
+        if (channel == null) {
+            logger.warning("Election info channel is not a text channel or is not configured.");
+            return;
+        }
+        channel.sendMessage(content).queue(null, failure -> logger.warning("Failed to publish election info announcement: " + failure.getMessage()));
+    }
+
+    private String renderMessage(String key, String fallback, Map<String, String> values) {
+        String rendered = config.messageTemplate(key, fallback);
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            rendered = rendered.replace("{" + entry.getKey() + "}", entry.getValue() == null ? "" : entry.getValue());
+        }
+        return rendered.replaceAll("(?m)^\\s+$", "").trim();
+    }
+
+    private String minimumVotesLine(int minimumVotes, String label) {
+        if (minimumVotes <= 0) {
+            return "No minimum vote count is required for this " + label + ".";
+        }
+        return "This " + label + " needs at least " + minimumVotes + " total votes before it can pass.";
     }
 
     private void ensureDiscordRoles() {
@@ -810,12 +1047,9 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
                         .addOption(OptionType.INTEGER, "tier", "Cabinet tier: 1, 2, or 3.", true),
                     new SubcommandData("cabinet-remove", "Remove a cabinet member.")
                         .addOption(OptionType.USER, "user", "The cabinet member to remove.", true),
-                    new SubcommandData("propose", "Open the policy file browser or directly propose a change.")
-                        .addOption(OptionType.STRING, "file", "Relative server file path for direct mode.", false)
-                        .addOption(OptionType.STRING, "content", "Full replacement content for direct mode.", false),
-                    new SubcommandData("propose-upload", "Propose a change using an uploaded replacement file.")
-                        .addOption(OptionType.STRING, "file", "Relative server file path.", true)
-                        .addOption(OptionType.ATTACHMENT, "attachment", "Replacement .yml, .yaml, or .json file.", true),
+                    new SubcommandData("browse", "Open the policy file browser."),
+                    new SubcommandData("force-change", "Owner-only approve, test, apply, or defer a policy proposal.")
+                        .addOption(OptionType.INTEGER, "proposal-id", "Policy proposal id. Optional inside a proposal thread.", false),
                     new SubcommandData("smoke-test", "Post a harmless demo message and check ElectionBot setup.")
                 )
         ).queue(null, failure -> logger.warning("Failed to register Discord slash commands: " + failure.getMessage()));
@@ -867,6 +1101,25 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
         return (bytes / (1024 * 1024)) + " MB";
     }
 
+    private String parentPath(String relativePath) {
+        String normalized = relativePath == null ? "" : relativePath.replace('\\', '/').replaceFirst("^/+", "").replaceFirst("/$", "");
+        int slash = normalized.lastIndexOf('/');
+        if (slash < 0) {
+            return "";
+        }
+        return normalized.substring(0, slash + 1);
+    }
+
+    private String displayPath(String relativePath) {
+        return relativePath == null || relativePath.isBlank() ? "/" : relativePath;
+    }
+
+    private String entryName(String relativePath) {
+        String normalized = relativePath == null ? "" : relativePath.replace('\\', '/').replaceFirst("/$", "");
+        int slash = normalized.lastIndexOf('/');
+        return slash < 0 ? normalized : normalized.substring(slash + 1);
+    }
+
     private String shorten(String value, int maxLength) {
         if (value.length() <= maxLength) {
             return value;
@@ -904,7 +1157,31 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
     }
 
     private String checkForum(String label, long channelId) {
-        return (channelId != 0L && guild.getForumChannelById(channelId) != null ? "[OK] " : "[MISSING] ") + label;
+        if (channelId == 0L) {
+            return "[MISSING] " + label;
+        }
+        ForumChannel forum = guild.getForumChannelById(channelId);
+        if (forum == null) {
+            return "[MISSING] " + label;
+        }
+        Member self = guild.getSelfMember();
+        List<Permission> missing = new ArrayList<>();
+        for (Permission permission : List.of(
+            Permission.VIEW_CHANNEL,
+            Permission.MESSAGE_SEND,
+            Permission.MESSAGE_SEND_IN_THREADS,
+            Permission.MESSAGE_HISTORY,
+            Permission.MESSAGE_ADD_REACTION,
+            Permission.MANAGE_THREADS
+        )) {
+            if (!self.hasPermission(forum, permission)) {
+                missing.add(permission);
+            }
+        }
+        if (!missing.isEmpty()) {
+            return "[MISSING PERMS] " + label + " " + missing;
+        }
+        return "[OK] " + label;
     }
 
     private String checkTextChannel(String label, long channelId) {
@@ -913,6 +1190,68 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
 
     private String checkRole(String roleName) {
         return (roleByName(roleName) != null ? "[OK] role " : "[MISSING] role ") + roleName;
+    }
+
+    private boolean canUsePolicyAdminBypass(Member member) {
+        if (member == null) {
+            return false;
+        }
+        if (config.policyAllowDiscordOwnerBypass() && isDiscordOwner(member)) {
+            return true;
+        }
+        List<String> allowedRoles = config.policyAdminBypassRoles().stream()
+            .map(role -> role.toLowerCase(Locale.ROOT))
+            .toList();
+        if (allowedRoles.isEmpty()) {
+            return false;
+        }
+        return member.getRoles().stream()
+            .map(role -> role.getName().toLowerCase(Locale.ROOT))
+            .anyMatch(allowedRoles::contains);
+    }
+
+    private boolean isDiscordOwner(Member member) {
+        return member != null && guild != null && member.getIdLong() == guild.getOwnerIdLong();
+    }
+
+    private Optional<ProposalRecord> resolveProposal(SlashCommandInteractionEvent event, Long proposalId) {
+        if (proposalId != null) {
+            return policyService.proposalById(proposalId);
+        }
+        if (event.getChannel() instanceof ThreadChannel thread) {
+            return policyService.proposalByThread(thread.getId());
+        }
+        return Optional.empty();
+    }
+
+    private String reactionDebugLine(Message message) {
+        int thumbsUp = 0;
+        int thumbsDown = 0;
+        for (var reaction : message.getReactions()) {
+            int value = reactionValue(reaction.getEmoji().getName());
+            if (value == 1) {
+                thumbsUp = reaction.getCount();
+            } else if (value == -1) {
+                thumbsDown = reaction.getCount();
+            }
+        }
+        return "👍 " + thumbsUp + " / 👎 " + thumbsDown + " (Discord raw reaction counts include the bot's starter reactions)";
+    }
+
+    private String nullToNone(String value) {
+        return value == null || value.isBlank() ? "none" : value;
+    }
+
+    private String friendlyDiscordFailure(String location, Throwable failure) {
+        String message = failure.getMessage() == null ? failure.toString() : failure.getMessage();
+        if (message.contains("MESSAGE_SEND")) {
+            return message + "\nElectionBot is missing `Send Messages` in the " + location + ". In Discord, edit that forum's permissions for the ElectionBot role and allow `View Channel`, `Send Messages`, `Send Messages in Threads`, `Read Message History`, `Add Reactions`, and `Manage Threads`.";
+        }
+        return message;
+    }
+
+    private void sendBrowserMessage(InteractionHook hook, BrowserMessage message) {
+        hook.sendMessage(message.content()).setEphemeral(true).addComponents(message.components()).queue();
     }
 
     private String format(java.time.ZonedDateTime value) {
@@ -924,8 +1263,10 @@ public final class DiscordBotService extends ListenerAdapter implements DiscordE
 
     private static final class PolicyBrowserSession {
         private int filePage;
+        private String currentPath = "";
         private String selectedPath;
         private int previewPage;
+        private boolean adminBypass;
     }
 
     @FunctionalInterface

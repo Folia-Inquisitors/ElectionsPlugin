@@ -6,9 +6,11 @@ build/
 .idea/
 .vscode/
 *.iml
+*.class
 
 # Runtime plugin/server data
 plugins/
+.codex-staging/
 *.db
 *.sqlite
 *.sqlite3

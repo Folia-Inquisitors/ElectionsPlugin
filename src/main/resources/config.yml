@@ -10,6 +10,45 @@ discord:
     polls: "PUT_FORUM_ID_HERE"
   channels:
     approvedChangesLog: "PUT_CHANNEL_ID_HERE"
+    electionInfo: "PUT_CHANNEL_ID_HERE"
+
+messages:
+  electionOpenTitle: "Election Open - {period}"
+  electionOpen: |-
+    The presidential election is now open.
+    Create a post in this forum to run for president.
+    Voting uses thumbs up and thumbs down reactions.
+    The candidate with the highest net thumbs up score wins.
+    {minimum_votes_line}
+    Election closes: {ends_at}
+  electionResultTitle: "Election Result - {period}"
+  electionWinner: |-
+    Election winner: {winner_mention}
+    Net score: {net_score}
+    Thumbs up: {upvotes}
+    Thumbs down: {downvotes}
+    Next election starts: {next_start}
+    Next election ends: {next_end}
+  electionNoWinner: |-
+    Election closed with no winner{tie_reason}
+    Next election starts: {next_start}
+    Next election ends: {next_end}
+  policyProposalTitle: "Policy Proposal #{proposal_id} - {file}"
+  policyProposal: |-
+    Policy proposal by {proposer_mention}
+    Proposal ID: `{proposal_id}`
+    File: `{file}`
+    Voting closes: {closes_at}
+    Vote by thumbs up or thumbs down.
+    If this post has a positive net score when voting closes, it will be implemented.
+    {minimum_votes_line}
+
+    ```diff
+    {diff}
+    ```
+  approvedPolicy: |-
+    Approved policy change processed: `{file}` by {proposer_mention}.
+    {stage_status}
 
 roles:
   autoCreateDiscordRoles: true
@@ -53,6 +92,11 @@ policy:
   durationDays: 7
   minimumVotes: 0
   maxFileBytes: 200000
+  allowDiscordOwnerBypass: true
+  allowDiscordManageServerBypass: false
+  adminBypassRoles:
+    - "Owner"
+  pluginJarSearchPaths: []
   allowedExtensions:
     - ".yml"
     - ".yaml"

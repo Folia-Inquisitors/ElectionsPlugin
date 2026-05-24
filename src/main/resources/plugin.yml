@@ -10,7 +10,7 @@ softdepend:
 commands:
   election:
     description: ElectionsPlugin commands.
-    usage: /election <verify|status|reload>
+    usage: /election <verify|status|reload|force-change>
     permission: electionsplugin.command
 permissions:
   electionsplugin.command:

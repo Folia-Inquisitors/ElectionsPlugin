@@ -35,7 +35,7 @@ public final class ElectionsPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
+        ensureConfigDefaults();
         this.pluginConfig = new PluginConfig(this);
         this.worker = Executors.newScheduledThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "ElectionsPlugin-worker");
@@ -85,16 +85,23 @@ public final class ElectionsPlugin extends JavaPlugin {
     }
 
     public void reloadPluginConfig() {
-        reloadConfig();
+        ensureConfigDefaults();
         this.pluginConfig = new PluginConfig(this);
         if (discordBotService != null) {
             discordBotService.reloadConfig(pluginConfig);
         }
     }
 
+    private void ensureConfigDefaults() {
+        saveDefaultConfig();
+        reloadConfig();
+        getConfig().options().copyDefaults(true);
+        saveConfig();
+    }
+
     private void registerCommands() {
         PluginCommand command = Objects.requireNonNull(getCommand("election"), "election command missing from plugin.yml");
-        ElectionCommand executor = new ElectionCommand(this, verificationService, electionService, roleSyncService);
+        ElectionCommand executor = new ElectionCommand(this, verificationService, electionService, roleSyncService, policyService);
         command.setExecutor(executor);
         command.setTabCompleter(executor);
     }
