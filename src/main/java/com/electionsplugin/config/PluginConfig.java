@@ -177,6 +177,11 @@ public final class PluginConfig {
         return config.getStringList("policy.pluginJarSearchPaths");
     }
 
+    public List<String> editableRoots() {
+        List<String> roots = config.getStringList("policy.editableRoots");
+        return roots.isEmpty() ? List.of("plugins/") : roots;
+    }
+
     public List<String> allowedExtensions() {
         return config.getStringList("policy.allowedExtensions");
     }

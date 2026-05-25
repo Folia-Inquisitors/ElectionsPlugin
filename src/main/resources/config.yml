@@ -97,16 +97,32 @@ policy:
   adminBypassRoles:
     - "Owner"
   pluginJarSearchPaths: []
+  editableRoots:
+    - "plugins/"
   allowedExtensions:
     - ".yml"
     - ".yaml"
     - ".json"
   excludedPaths:
-    - "plugins/ElectionsPlugin/"
-    - "plugins/LuckPerms/"
     - "world/"
     - "world_nether/"
     - "world_the_end/"
+    - "logs/"
+    - "libraries/"
+    - "versions/"
+    - "cache/"
+    - "crash-reports/"
+    - "backups/"
+    - "plugins/ElectionsPlugin/**"
+    - "plugins/*.jar"
+    - "plugins/**/*.jar"
+    - "plugins/**/*.db"
+    - "plugins/**/*.sqlite"
+    - "plugins/**/*.sqlite3"
+    - "plugins/**/.env"
+    - "plugins/**/secrets.yml"
+    - "plugins/**/secret.yml"
+    - "plugins/**/credentials.json"
   secretPatterns:
     - "(?i)token\\s*[:=]"
     - "(?i)password\\s*[:=]"

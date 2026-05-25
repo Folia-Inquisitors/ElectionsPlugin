@@ -23,7 +23,10 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Optional;
@@ -34,6 +37,12 @@ import java.util.regex.Pattern;
 import java.util.jar.JarFile;
 
 public final class PolicyService {
+    private static final String REDACTION = "****";
+    private static final Pattern IPV4_PATTERN = Pattern.compile("\\b(?:(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?::\\d{1,5})?\\b");
+    private static final Pattern HOST_PORT_PATTERN = Pattern.compile("(?i)\\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}(?::\\d{1,5})\\b");
+    private static final Pattern KEY_VALUE_PATTERN = Pattern.compile("^(\\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\\s*[:=]\\s*)(.*)$");
+    private static final Set<String> SECRET_KEY_PARTS = Set.of("token", "password", "passwd", "secret", "apikey", "api-key", "api_key", "privatekey", "private-key", "private_key", "clientsecret", "client-secret", "client_secret");
+    private static final Set<String> ADDRESS_KEY_PARTS = Set.of("ip", "host", "address", "addr", "url", "uri", "dsn", "jdbc");
     private final ElectionsPlugin plugin;
     private final Database database;
     private final PluginConfig config;
@@ -74,15 +83,17 @@ public final class PolicyService {
                 return PolicyResult.failure("That file is larger than the configured max file size.");
             }
             String current = Files.readString(target, StandardCharsets.UTF_8);
-            if (containsSecret(current) || containsSecret(proposedContent)) {
-                return PolicyResult.failure("Secret-like content was detected, so this proposal was blocked before public posting.");
+            ProtectedMerge protectedMerge = mergeProtectedValues(current, proposedContent);
+            if (!protectedMerge.success()) {
+                return PolicyResult.failure(protectedMerge.message());
             }
-            String validationError = validateSyntax(relativePath, proposedContent);
+            String effectiveProposedContent = protectedMerge.content();
+            String validationError = validateSyntax(relativePath, effectiveProposedContent);
             if (validationError != null) {
                 return PolicyResult.failure(validationError);
             }
 
-            String diff = DiffUtil.unifiedDiff(current, proposedContent, 4);
+            String diff = DiffUtil.unifiedDiff(redactProtectedValues(current), redactProtectedValues(effectiveProposedContent), 4);
             long now = Instant.now().toEpochMilli();
             long closesAt = now + config.policyDurationDays() * 24L * 60L * 60L * 1000L;
             long id = database.insert(
@@ -93,7 +104,7 @@ public final class PolicyService {
                 statement -> {
                     Database.setString(statement, 1, proposerDiscordId);
                     Database.setString(statement, 2, normalizeRelativePath(relativePath));
-                    Database.setString(statement, 3, proposedContent);
+                    Database.setString(statement, 3, effectiveProposedContent);
                     Database.setString(statement, 4, diff);
                     Database.setLong(statement, 5, now);
                     Database.setLong(statement, 6, closesAt);
@@ -193,15 +204,13 @@ public final class PolicyService {
                 return FilePreview.failure("That file is larger than the configured max file size.");
             }
             String content = Files.readString(target, StandardCharsets.UTF_8);
-            if (containsSecret(content)) {
-                return FilePreview.failure("That file contains secret-like content and cannot be viewed through Discord.");
-            }
-            int totalPages = Math.max(1, (int) Math.ceil((double) content.length() / pageChars));
+            String visibleContent = redactProtectedValues(content);
+            int totalPages = Math.max(1, (int) Math.ceil((double) visibleContent.length() / pageChars));
             int safePage = Math.max(0, Math.min(page, totalPages - 1));
             int start = safePage * pageChars;
-            int end = Math.min(content.length(), start + pageChars);
-            String pageContent = content.substring(start, end);
-            return FilePreview.success(normalizeRelativePath(relativePath), content, pageContent, safePage, totalPages);
+            int end = Math.min(visibleContent.length(), start + pageChars);
+            String pageContent = visibleContent.substring(start, end);
+            return FilePreview.success(normalizeRelativePath(relativePath), visibleContent, pageContent, safePage, totalPages);
         } catch (Exception exception) {
             return FilePreview.failure("Could not read file: " + exception.getMessage());
         }
@@ -374,23 +383,27 @@ public final class PolicyService {
         try {
             if (Files.exists(target)) {
                 current = Files.readString(target, StandardCharsets.UTF_8);
-                if (containsSecret(current)) {
-                    checks.add(new ValidationCheck("FAIL", "Current file contains secret-like content and cannot be handled through Discord."));
+                ProtectedScan currentScan = scanProtectedValues(current);
+                if (currentScan.total() > 0) {
+                    checks.add(new ValidationCheck("OK", "Current file contains " + currentScan.total() + " protected value(s); they are redacted in Discord and locked during edits."));
                 } else {
-                    checks.add(new ValidationCheck("OK", "Current file passed secret-pattern scan."));
+                    checks.add(new ValidationCheck("OK", "Current file has no protected secret/IP/port values."));
                 }
             }
         } catch (Exception exception) {
             checks.add(new ValidationCheck("FAIL", "Could not read current file: " + exception.getMessage()));
         }
 
-        if (containsSecret(proposal.proposedContent())) {
-            checks.add(new ValidationCheck("FAIL", "Proposed content contains secret-like content."));
+        ProtectedMerge protectedMerge = mergeProtectedValues(current, proposal.proposedContent());
+        if (protectedMerge.success()) {
+            ProtectedScan proposedScan = scanProtectedValues(protectedMerge.content());
+            checks.add(new ValidationCheck("OK", "Protected values are unchanged. Redacted/locked value count: " + proposedScan.total() + "."));
         } else {
-            checks.add(new ValidationCheck("OK", "Proposed content passed secret-pattern scan."));
+            checks.add(new ValidationCheck("FAIL", protectedMerge.message()));
         }
 
-        String syntax = validateSyntax(proposal.relativePath(), proposal.proposedContent());
+        String effectiveProposedContent = protectedMerge.content() == null ? proposal.proposedContent() : protectedMerge.content();
+        String syntax = validateSyntax(proposal.relativePath(), effectiveProposedContent);
         if (syntax == null) {
             checks.add(new ValidationCheck("OK", "Proposed content parses as valid YAML/JSON."));
         } else {
@@ -398,7 +411,7 @@ public final class PolicyService {
         }
 
         if (!current.isEmpty()) {
-            DiffStats stats = diffStats(current, proposal.proposedContent());
+            DiffStats stats = diffStats(redactProtectedValues(current), redactProtectedValues(effectiveProposedContent));
             checks.add(new ValidationCheck(stats.changed() ? "OK" : "WARN", "Diff summary: +" + stats.addedLines() + " / -" + stats.removedLines() + "."));
         }
 
@@ -409,7 +422,7 @@ public final class PolicyService {
                 checks.add(new ValidationCheck("FAIL", "Sandbox path escaped the dry-run folder."));
             } else {
                 Files.createDirectories(sandboxPath.getParent());
-                Files.writeString(sandboxPath, proposal.proposedContent(), StandardCharsets.UTF_8);
+                Files.writeString(sandboxPath, effectiveProposedContent, StandardCharsets.UTF_8);
                 checks.add(new ValidationCheck("OK", "Wrote sandbox copy: `" + plugin.getDataFolder().toPath().relativize(sandboxPath) + "`."));
                 String sandboxContent = Files.readString(sandboxPath, StandardCharsets.UTF_8);
                 String sandboxSyntax = validateSyntax(proposal.relativePath(), sandboxContent);
@@ -608,6 +621,9 @@ public final class PolicyService {
         if (!extensionAllowed) {
             return null;
         }
+        if (!isInEditableRoot(normalizedRelative)) {
+            return null;
+        }
         if (isExcluded(normalizedRelative)) {
             return null;
         }
@@ -621,6 +637,9 @@ public final class PolicyService {
 
     private Path resolveAllowedDirectory(String relativeDirectory) {
         String normalizedRelative = normalizeDirectoryPath(relativeDirectory);
+        if (!isDirectoryInEditableScope(normalizedRelative)) {
+            return null;
+        }
         if (!normalizedRelative.isBlank() && isExcluded(normalizedRelative)) {
             return null;
         }
@@ -648,11 +667,71 @@ public final class PolicyService {
         String lower = normalizeRelativePath(relativePath).toLowerCase(Locale.ROOT);
         for (String excluded : config.excludedPaths()) {
             String excludedNormalized = normalizeRelativePath(excluded).toLowerCase(Locale.ROOT);
-            if (!excludedNormalized.isBlank() && lower.startsWith(excludedNormalized)) {
+            if (excludedNormalized.isBlank()) {
+                continue;
+            }
+            if (excludedNormalized.contains("*") || excludedNormalized.contains("?")) {
+                if (Pattern.compile(globToRegex(excludedNormalized)).matcher(lower).matches()) {
+                    return true;
+                }
+                continue;
+            }
+            if (excludedNormalized.endsWith("/") && lower.startsWith(excludedNormalized)) {
+                return true;
+            }
+            if (lower.equals(excludedNormalized) || lower.startsWith(excludedNormalized + "/")) {
                 return true;
             }
         }
         return false;
+    }
+
+    private boolean isInEditableRoot(String relativePath) {
+        String lower = normalizeRelativePath(relativePath).toLowerCase(Locale.ROOT);
+        for (String root : config.editableRoots()) {
+            String editableRoot = normalizeDirectoryPath(root).toLowerCase(Locale.ROOT);
+            if (!editableRoot.isBlank() && lower.startsWith(editableRoot)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isDirectoryInEditableScope(String relativeDirectory) {
+        String lower = normalizeDirectoryPath(relativeDirectory).toLowerCase(Locale.ROOT);
+        if (lower.isBlank()) {
+            return true;
+        }
+        for (String root : config.editableRoots()) {
+            String editableRoot = normalizeDirectoryPath(root).toLowerCase(Locale.ROOT);
+            if (!editableRoot.isBlank() && (lower.startsWith(editableRoot) || editableRoot.startsWith(lower))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String globToRegex(String glob) {
+        StringBuilder regex = new StringBuilder("^");
+        for (int i = 0; i < glob.length(); i++) {
+            char current = glob.charAt(i);
+            if (current == '*') {
+                boolean doublestar = i + 1 < glob.length() && glob.charAt(i + 1) == '*';
+                if (doublestar) {
+                    regex.append(".*");
+                    i++;
+                } else {
+                    regex.append("[^/]*");
+                }
+            } else if (current == '?') {
+                regex.append("[^/]");
+            } else if ("\\.[]{}()+-^$|".indexOf(current) >= 0) {
+                regex.append('\\').append(current);
+            } else {
+                regex.append(current);
+            }
+        }
+        return regex.append("$").toString();
     }
 
     private boolean directoryContainsEditableFile(Path root, Path directory) {
@@ -705,13 +784,242 @@ public final class PolicyService {
         }
     }
 
-    private boolean containsSecret(String text) {
+    private String redactProtectedValues(String content) {
+        StringBuilder redacted = new StringBuilder();
+        String[] lines = content.split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            redacted.append(redactProtectedLine(lines[i]));
+            if (i < lines.length - 1) {
+                redacted.append('\n');
+            }
+        }
+        return redacted.toString();
+    }
+
+    private String redactProtectedLine(String line) {
+        ProtectedLine protectedLine = protectedLine(line);
+        if (protectedLine.protectedValue()) {
+            return protectedLine.prefix() + redactedScalar(protectedLine.value());
+        }
+        String redacted = IPV4_PATTERN.matcher(line).replaceAll(REDACTION);
+        return HOST_PORT_PATTERN.matcher(redacted).replaceAll(REDACTION);
+    }
+
+    private ProtectedMerge mergeProtectedValues(String currentContent, String proposedContent) {
+        String[] currentLines = currentContent.split("\\R", -1);
+        String[] proposedLines = proposedContent.split("\\R", -1);
+        Map<String, Deque<String>> currentProtectedByKey = new HashMap<>();
+        Deque<String> currentInlineProtected = new ArrayDeque<>();
+        for (String currentLine : currentLines) {
+            ProtectedLine protectedLine = protectedLine(currentLine);
+            if (!protectedLine.protectedValue()) {
+                continue;
+            }
+            if (protectedLine.key().isBlank()) {
+                currentInlineProtected.addLast(currentLine);
+            } else {
+                currentProtectedByKey.computeIfAbsent(protectedLine.key(), ignored -> new ArrayDeque<>()).addLast(currentLine);
+            }
+        }
+
+        StringBuilder merged = new StringBuilder();
+        for (int i = 0; i < proposedLines.length; i++) {
+            String proposedLine = proposedLines[i];
+            ProtectedLine proposedProtected = protectedLine(proposedLine);
+            String lineToWrite = proposedLine;
+
+            if (proposedProtected.protectedValue()) {
+                if (proposedProtected.key().isBlank()) {
+                    if (currentInlineProtected.removeFirstOccurrence(proposedLine)) {
+                        lineToWrite = proposedLine;
+                    } else if (proposedProtected.redactionPlaceholder() && !currentInlineProtected.isEmpty()) {
+                        lineToWrite = currentInlineProtected.removeFirst();
+                    } else {
+                        return ProtectedMerge.failure("New protected IP/host-port value on line " + (i + 1) + " is not allowed through Discord.");
+                    }
+                } else {
+                    Deque<String> currentValues = currentProtectedByKey.get(proposedProtected.key());
+                    if (currentValues == null || currentValues.isEmpty()) {
+                        if (proposedProtected.redactionPlaceholder()) {
+                            return ProtectedMerge.failure("Protected placeholder on line " + (i + 1) + " does not match an existing locked field.");
+                        }
+                        return ProtectedMerge.failure("New protected " + proposedProtected.category() + " value on line " + (i + 1) + " is not allowed through Discord.");
+                    }
+                    if (proposedProtected.redactionPlaceholder()) {
+                        lineToWrite = currentValues.removeFirst();
+                    } else if (currentValues.removeFirstOccurrence(proposedLine)) {
+                        lineToWrite = proposedLine;
+                    } else {
+                        return ProtectedMerge.failure("Protected value on line " + (i + 1) + " cannot be changed. Leave the `" + REDACTION + "` placeholder in place.");
+                    }
+                }
+            } else if (containsProtectedInlineValue(proposedLine) && !containsOnlyRedactionInlineValue(proposedLine)) {
+                return ProtectedMerge.failure("New protected IP/host-port value on line " + (i + 1) + " is not allowed through Discord.");
+            }
+
+            merged.append(lineToWrite);
+            if (i < proposedLines.length - 1) {
+                merged.append('\n');
+            }
+        }
+        for (Deque<String> remaining : currentProtectedByKey.values()) {
+            if (!remaining.isEmpty()) {
+                return ProtectedMerge.failure("An existing protected value was removed. Protected secret/IP/port fields must stay in place.");
+            }
+        }
+        if (!currentInlineProtected.isEmpty()) {
+            return ProtectedMerge.failure("An existing protected IP/host-port value was removed. Protected values must stay in place.");
+        }
+        return ProtectedMerge.success(merged.toString());
+    }
+
+    private ProtectedScan scanProtectedValues(String content) {
+        int secret = 0;
+        int address = 0;
+        int port = 0;
+        int inline = 0;
+        for (String line : content.split("\\R", -1)) {
+            ProtectedLine protectedLine = protectedLine(line);
+            if (protectedLine.protectedValue()) {
+                switch (protectedLine.category()) {
+                    case "port" -> port++;
+                    case "address" -> address++;
+                    default -> secret++;
+                }
+            } else if (containsProtectedInlineValue(line)) {
+                inline++;
+            }
+        }
+        return new ProtectedScan(secret, address, port, inline);
+    }
+
+    private ProtectedLine protectedLine(String line) {
+        String trimmed = line.trim();
+        if (trimmed.isBlank() || trimmed.startsWith("#") || trimmed.startsWith("//")) {
+            return ProtectedLine.none();
+        }
+        if (trimmed.startsWith("- ")) {
+            return ProtectedLine.none();
+        }
+        var matcher = KEY_VALUE_PATTERN.matcher(line);
+        if (!matcher.matches()) {
+            return ProtectedLine.none();
+        }
+
+        String prefix = matcher.group(1);
+        String key = matcher.group(2).toLowerCase(Locale.ROOT);
+        String value = matcher.group(3).trim();
+        String scalar = scalarValue(value);
+        if (scalar.isBlank() || isEmptyContainer(scalar) || looksLikeSafePathOrPattern(scalar)) {
+            return containsProtectedInlineValue(value)
+                ? new ProtectedLine(prefix, key, value, "address", false, true)
+                : ProtectedLine.none();
+        }
+        boolean placeholder = scalar.equals(REDACTION);
+        String compactKey = key.replace("_", "").replace("-", "").replace(".", "");
+
+        if (matchesConfiguredSecretPattern(line) || containsAny(compactKey, SECRET_KEY_PARTS)) {
+            return new ProtectedLine(prefix, key, value, "secret", placeholder, true);
+        }
+        if (isPortKey(key) && looksLikePortValue(value)) {
+            return new ProtectedLine(prefix, key, value, "port", placeholder, true);
+        }
+        if (isIpKey(key) && !scalar.isBlank()) {
+            return new ProtectedLine(prefix, key, value, "address", placeholder, true);
+        }
+        if (containsAny(compactKey, ADDRESS_KEY_PARTS) && containsProtectedInlineValue(value)) {
+            return new ProtectedLine(prefix, key, value, "address", placeholder, true);
+        }
+        return ProtectedLine.none();
+    }
+
+    private boolean matchesConfiguredSecretPattern(String line) {
         for (String pattern : config.secretPatterns()) {
-            if (Pattern.compile(pattern).matcher(text).find()) {
+            if (Pattern.compile(pattern).matcher(line).find()) {
                 return true;
             }
         }
         return false;
+    }
+
+    private boolean containsAny(String text, Set<String> needles) {
+        for (String needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isPortKey(String key) {
+        String lower = key.toLowerCase(Locale.ROOT);
+        return lower.equals("port") || lower.endsWith("port") || lower.contains("_port") || lower.contains("-port") || lower.contains(".port");
+    }
+
+    private boolean isIpKey(String key) {
+        String lower = key.toLowerCase(Locale.ROOT);
+        return lower.equals("ip") || lower.endsWith("_ip") || lower.endsWith("-ip") || lower.endsWith(".ip")
+            || lower.contains("ip_address") || lower.contains("ip-address") || lower.contains("ip.address");
+    }
+
+    private boolean looksLikePortValue(String value) {
+        String unquoted = scalarValue(value);
+        try {
+            int port = Integer.parseInt(unquoted);
+            return port >= 1 && port <= 65535;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private boolean isEmptyContainer(String value) {
+        return "[]".equals(value) || "{}".equals(value);
+    }
+
+    private boolean looksLikeSafePathOrPattern(String value) {
+        String lower = value.toLowerCase(Locale.ROOT);
+        if (lower.contains("\\s*") || lower.contains("[:=]") || lower.startsWith("(?")) {
+            return true;
+        }
+        return lower.contains("/") || lower.contains("\\") || lower.endsWith(".yml") || lower.endsWith(".yaml")
+            || lower.endsWith(".json") || lower.endsWith(".txt") || lower.endsWith(".toml") || lower.endsWith(".db")
+            || lower.contains("*");
+    }
+
+    private boolean containsProtectedInlineValue(String value) {
+        return IPV4_PATTERN.matcher(value).find() || HOST_PORT_PATTERN.matcher(value).find();
+    }
+
+    private boolean containsOnlyRedactionInlineValue(String value) {
+        return value.contains(REDACTION) && !IPV4_PATTERN.matcher(value).find() && !HOST_PORT_PATTERN.matcher(value).find();
+    }
+
+    private String redactedScalar(String value) {
+        String trimmed = value.trim();
+        String suffix = trimmed.endsWith(",") ? "," : "";
+        String withoutComma = suffix.isEmpty() ? trimmed : trimmed.substring(0, trimmed.length() - 1).trim();
+        if (withoutComma.startsWith("\"")) {
+            return "\"" + REDACTION + "\"" + suffix;
+        }
+        if (withoutComma.startsWith("'")) {
+            return "'" + REDACTION + "'" + suffix;
+        }
+        return REDACTION + suffix;
+    }
+
+    private String scalarValue(String value) {
+        String trimmed = value.trim();
+        if (trimmed.endsWith(",")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+        }
+        int comment = trimmed.indexOf(" #");
+        if (comment >= 0) {
+            trimmed = trimmed.substring(0, comment).trim();
+        }
+        if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+            return trimmed.substring(1, trimmed.length() - 1).trim();
+        }
+        return trimmed;
     }
 
     private void refreshProposalScore(long proposalId) {
@@ -1243,8 +1551,10 @@ public final class PolicyService {
                 markStageFailed(change.id(), validation);
                 return false;
             }
-            if (containsSecret(change.proposedContent())) {
-                markStageFailed(change.id(), "Secret-like content was detected during final validation.");
+            String currentContent = Files.exists(target) ? Files.readString(target, StandardCharsets.UTF_8) : "";
+            ProtectedMerge protectedMerge = mergeProtectedValues(currentContent, change.proposedContent());
+            if (!protectedMerge.success()) {
+                markStageFailed(change.id(), protectedMerge.message());
                 return false;
             }
             Files.createDirectories(target.getParent());
@@ -1259,7 +1569,7 @@ public final class PolicyService {
                 Files.copy(target, backup);
             }
             try {
-                Files.writeString(target, change.proposedContent(), StandardCharsets.UTF_8);
+                Files.writeString(target, protectedMerge.content(), StandardCharsets.UTF_8);
                 database.update(
                     "UPDATE staged_file_changes SET status = ?, applied_at = ?, failure = ? WHERE id = ?",
                     statement -> {
@@ -1383,6 +1693,28 @@ public final class PolicyService {
     }
 
     private record ApplyDecision(boolean changedFile, String message) {
+    }
+
+    private record ProtectedLine(String prefix, String key, String value, String category, boolean redactionPlaceholder, boolean protectedValue) {
+        private static ProtectedLine none() {
+            return new ProtectedLine("", "", "", "", false, false);
+        }
+    }
+
+    private record ProtectedMerge(boolean success, String content, String message) {
+        private static ProtectedMerge success(String content) {
+            return new ProtectedMerge(true, content, "");
+        }
+
+        private static ProtectedMerge failure(String message) {
+            return new ProtectedMerge(false, null, message);
+        }
+    }
+
+    private record ProtectedScan(int secret, int address, int port, int inline) {
+        private int total() {
+            return secret + address + port + inline;
+        }
     }
 
     public record FileEntry(String relativePath, long size) {
